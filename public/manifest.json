@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Student Hub - School Canvas Sync",
+  "version": "0.1.0",
+  "description": "Locally organize visible School Canvas homework, messages, and notices.",
+  "permissions": ["alarms", "storage", "tabs"],
+  "host_permissions": ["https://student.schoolcanvas.com/*"],
+  "background": {
+    "service_worker": "extension/background.js"
+  },
+  "action": {
+    "default_title": "Open Student Hub"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://student.schoolcanvas.com/*"],
+      "js": ["extension/content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
