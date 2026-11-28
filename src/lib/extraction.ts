@@ -394,6 +394,22 @@ function extractAnnouncements(capture: PageCapture): Announcement[] {
   }];
 }
 
+function capturePathname(urlValue: string): string {
+  try {
+    return new URL(urlValue).pathname;
+  } catch {
+    return "";
+  }
+}
+
+function isMessageListCapture(urlValue: string): boolean {
+  return /\/user\/student\/twcmessages\/?$/i.test(capturePathname(urlValue));
+}
+
+function isMessageDetailCapture(urlValue: string): boolean {
+  return /\/user\/student\/twcmessagedetails\/?$/i.test(capturePathname(urlValue));
+}
+
 export function parseCaptures(captures: PageCapture[]): {
   assignments: Assignment[];
   messages: TeacherMessage[];
@@ -427,7 +443,7 @@ export function parseCaptures(captures: PageCapture[]): {
     }
   }
 
-  for (const { capture, messages: capturedMessages } of rawMessages) {
+  const resolvedMessages = rawMessages.map(({ capture, messages: capturedMessages }) => {
     let staffId: string | undefined;
     try {
       staffId = new URL(capture.url).searchParams.get("StaffId") ?? undefined;
@@ -435,7 +451,9 @@ export function parseCaptures(captures: PageCapture[]): {
       staffId = undefined;
     }
     const thread = staffId ? teacherByStaffId.get(staffId) : undefined;
-    for (const item of capturedMessages) {
+    const listCapture = isMessageListCapture(capture.url);
+    const detailCapture = isMessageDetailCapture(capture.url);
+    const items = capturedMessages.map((item) => {
       const senderKey = item.sender?.toLocaleLowerCase();
       const knownTeacher = senderKey ? teacherByName.get(senderKey) : undefined;
       const threadTeacher = item.teacher ??
@@ -444,14 +462,45 @@ export function parseCaptures(captures: PageCapture[]): {
       const subject = item.subject ??
         (knownTeacher?.subjects.size === 1 ? [...knownTeacher.subjects][0] : undefined) ??
         thread?.subject;
-      const message = {
+      return {
         ...item,
+        id: stableId(
+          "sync-message",
+          `${item.sender ?? threadTeacher ?? "student"}|${subject ?? ""}|${item.postedAt ?? ""}|${item.content}`,
+        ),
         teacher: threadTeacher,
         subject,
       };
-      messages.set(message.id, message);
-      taskSuggestions.push({ message, suggested: hasAssignmentAndDeadline(message.content) });
+    });
+    return { listCapture, detailCapture, items };
+  });
+
+  // TwcMessages only shows a cover preview per teacher; prefer real thread messages from TwcMessageDetails.
+  const teachersWithDetailMessages = new Set<string>();
+  for (const { detailCapture, items } of resolvedMessages) {
+    if (!detailCapture) continue;
+    for (const message of items) {
+      if (message.teacher) {
+        teachersWithDetailMessages.add(canonicalPersonName(message.teacher).toLocaleLowerCase());
+      }
     }
+  }
+
+  for (const { listCapture, items } of resolvedMessages) {
+    for (const message of items) {
+      if (
+        listCapture &&
+        message.teacher &&
+        teachersWithDetailMessages.has(canonicalPersonName(message.teacher).toLocaleLowerCase())
+      ) {
+        continue;
+      }
+      messages.set(message.id, message);
+    }
+  }
+
+  for (const message of messages.values()) {
+    taskSuggestions.push({ message, suggested: hasAssignmentAndDeadline(message.content) });
   }
 
   for (const capture of captures) {

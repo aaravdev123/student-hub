@@ -432,7 +432,7 @@ Real notice text`);
       },
       teacherHistoryCapture,
     ]);
-    expect(result.messages).toHaveLength(3);
+    expect(result.messages).toHaveLength(2);
     const studentReply = result.messages.find((message) => message.sender === "Aarav Agarwal");
     expect(studentReply).toMatchObject({
       sender: "Aarav Agarwal",
@@ -446,6 +446,54 @@ Real notice text`);
     const thread = groupMessagesByTeacher(result.messages)[0];
     expect(thread.teacher).toBe("Pooja Sahni");
     expect(thread.messages.map((message) => message.sender)).toContain("Aarav Agarwal");
+    expect(thread.messages[0].content).toBe("Latest teacher update.");
+  });
+
+  it("drops the TwcMessages cover message when TwcMessageDetails is captured and uses the latest real message as the thread cover", () => {
+    const result = parseCaptures([
+      {
+        ...structuredMessagesCapture,
+        messageItems: [
+          {
+            teacher: "Pooja Sahni",
+            subject: "Computer Science",
+            content: "Dear Students Reference material for computer subject...",
+            postedAt: "11/5/2026 1:53:44 PM",
+          },
+          structuredMessagesCapture.messageItems![1],
+        ],
+        messageThreadRefs: [{
+          staffId: "108411",
+          teacher: "Pooja Sahni",
+          subject: "Computer Science",
+        }],
+      },
+      {
+        ...teacherHistoryCapture,
+        messageItems: [
+          {
+            sender: "Pooja Sahni",
+            content: "Dear Students Reference material for computer subject on the topic functions is uploaded on e-content.",
+            postedAt: "11/5/2026 1:53:44 PM",
+          },
+          {
+            sender: "Pooja Sahni",
+            content: "Latest teacher update.",
+            postedAt: "11/25/2026 7:35:38 PM",
+          },
+        ],
+      },
+    ]);
+
+    const threads = groupMessagesByTeacher(result.messages);
+    const poojaThread = threads.find((thread) => thread.teacher === "Pooja Sahni");
+    const anuThread = threads.find((thread) => thread.teacher === "Anu S Nair");
+
+    expect(poojaThread?.messages).toHaveLength(2);
+    expect(poojaThread?.messages[0].content).toBe("Latest teacher update.");
+    expect(poojaThread?.messages.some((message) => message.originalUrl === structuredMessagesCapture.url)).toBe(false);
+    expect(anuThread?.messages).toHaveLength(1);
+    expect(anuThread?.messages[0].content).toBe("There is an upcoming CBSE Exhibition.");
   });
 
   it("prevents duplicate extracted items when the same page is synchronized twice", () => {

@@ -34,11 +34,11 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { answerQuestion } from "./lib/assistant";
+import { buildCalendarEvents, type CalendarEventType, type DerivedCalendarEvent } from "./lib/calendarEvents";
 import { hasAssignmentAndDeadline } from "./lib/classify";
 import { groupMessagesByTeacher } from "./lib/messageThreads";
 import { getStorageMode, loadHubData, requestSync, saveHubData, setSyncInterval } from "./lib/store";
 import type {
-  Announcement,
   Assignment,
   CalendarEvent,
   HubData,
@@ -139,12 +139,15 @@ function App() {
   const [modal, setModal] = useState<"assignment" | "event" | null>(null);
   const [editing, setEditing] = useState<Assignment | null>(null);
   const [subjectFilter, setSubjectFilter] = useState("All subjects");
-  const [sortOrder, setSortOrder] = useState<"Soonest first" | "Latest first">("Soonest first");
+  const [sortOrder, setSortOrder] = useState<"Soonest first" | "Latest first">("Latest first");
   const [homeworkGroup, setHomeworkGroup] = useState("All");
   const [messageFilter, setMessageFilter] = useState("All messages");
   const [selectedMessageThread, setSelectedMessageThread] = useState<string | null>(null);
   const [calendarMode, setCalendarMode] = useState<"Month" | "Week" | "Day">("Month");
   const [calendarDate, setCalendarDate] = useState(new Date());
+  const [selectedCalendarDay, setSelectedCalendarDay] = useState(todayISO);
+  const [eventDraftDate, setEventDraftDate] = useState(todayISO);
+  const [calendarTypeFilter, setCalendarTypeFilter] = useState<"All" | CalendarEventType>("All");
   const [chatInput, setChatInput] = useState("");
   const [chat, setChat] = useState<Array<{ question: string; answer: string }>>([]);
   const [mobileMenu, setMobileMenu] = useState(false);
@@ -253,6 +256,15 @@ function App() {
     .filter((message) => messageFilter === "All messages" || message.category === messageFilter)
     .filter((message) => `${message.teacher ?? ""} ${message.subject ?? ""} ${message.content}`.toLowerCase().includes(search.toLowerCase())));
   const activeMessageThread = allMessageThreads.find((thread) => thread.key === selectedMessageThread);
+  const calendarEvents = useMemo(
+    () => buildCalendarEvents({
+      assignments,
+      messages,
+      announcements,
+      events: data?.events ?? [],
+    }),
+    [assignments, messages, announcements, data?.events],
+  );
 
   if (loadError && !data) {
     return <main className="fatal-state"><CircleHelp size={32} /><h1>Student Hub could not load</h1><p>{loadError}</p><button className="button primary" onClick={() => location.reload()}>Try again</button></main>;
@@ -316,6 +328,19 @@ function App() {
     }));
   }
 
+  function completeAllVisible() {
+    const ids = new Set(
+      sortedAssignments.filter((item) => item.status !== "completed").map((item) => item.id),
+    );
+    if (!ids.size) return;
+    save((current) => ({
+      ...current,
+      assignments: current.assignments.map((task) =>
+        ids.has(task.id) ? { ...task, status: "completed" } : task,
+      ),
+    }));
+  }
+
   function openAssignment(item?: Assignment) {
     setEditing(item ?? null);
     setModal("assignment");
@@ -355,6 +380,11 @@ function App() {
     }
     setModal(null);
     setEditing(null);
+  }
+
+  function openEventModal(dateIso?: string) {
+    setEventDraftDate(dateIso || selectedCalendarDay || todayISO());
+    setModal("event");
   }
 
   function submitEvent(event: React.FormEvent<HTMLFormElement>) {
@@ -551,7 +581,7 @@ function App() {
 
           <div className="page-heading">
             <div><div className="eyebrow">{view === "Dashboard" ? dateNow : "STUDENT WORKSPACE"}</div><h1>{viewLabel(view)}{view === "Dashboard" && <span className="heading-period">, student</span>}</h1><p>{viewDescription(view)}</p></div>
-            {(view === "Homework" || view === "Calendar") && <button className="button primary" onClick={() => setModal(view === "Homework" ? "assignment" : "event")}><Plus size={17} />{view === "Homework" ? "Add homework" : "Add event"}</button>}
+            {(view === "Homework" || view === "Calendar") && <button className="button primary" onClick={() => view === "Homework" ? openAssignment() : openEventModal()}><Plus size={17} />{view === "Homework" ? "Add homework" : "Add event"}</button>}
           </div>
 
           {view === "Dashboard" && (
@@ -562,6 +592,7 @@ function App() {
                 message.teacher &&
                 message.sender?.toLocaleLowerCase() === message.teacher.toLocaleLowerCase(),
               )}
+              calendarEvents={calendarEvents}
               progress={progress}
               dueToday={dueToday}
               overdue={overdue}
@@ -586,6 +617,7 @@ function App() {
                 <div className="toolbar-actions">
                   <label className="select-wrap"><Filter size={14} /><select value={subjectFilter} onChange={(event) => setSubjectFilter(event.target.value)}><option>All subjects</option>{[...new Set(assignments.map((item) => item.subject))].sort().map((subject) => <option key={subject}>{subject}</option>)}</select><ChevronDown size={14} /></label>
                   <button className="button subtle" onClick={() => setSortOrder(sortOrder === "Soonest first" ? "Latest first" : "Soonest first")}><ArrowDownUp size={15} />{sortOrder}</button>
+                  <button className="button subtle" onClick={completeAllVisible} disabled={!sortedAssignments.some((item) => item.status !== "completed")}><CheckCircle2 size={15} />Complete all</button>
                 </div>
               </div>
               {sortedAssignments.length ? <div className="assignment-list">{sortedAssignments.map(assignmentCard)}</div> : <EmptyState icon={ClipboardList} title="No homework in this view" detail="Try another filter or add an assignment to get started." action="Add homework" onAction={() => openAssignment()} />}
@@ -608,7 +640,7 @@ function App() {
                     </div>
                   </header>
                   <div className="conversation-messages">
-                    {[...activeMessageThread.messages].reverse().map(messageCard)}
+                    {activeMessageThread.messages.map(messageCard)}
                   </div>
                   <p className="subtle-copy">Showing messages available in the School Canvas pages captured by sync. Replies are sent in School Canvas.</p>
                 </div>
@@ -640,18 +672,23 @@ function App() {
             <CalendarView
               date={calendarDate}
               mode={calendarMode}
+              selectedDay={selectedCalendarDay}
+              typeFilter={calendarTypeFilter}
+              eventItems={calendarEvents}
               assignments={assignments}
-              announcements={announcements}
-              messages={messages}
-              events={data.events}
               setDate={setCalendarDate}
               setMode={setCalendarMode}
+              setSelectedDay={setSelectedCalendarDay}
+              setTypeFilter={setCalendarTypeFilter}
+              onAddEvent={openEventModal}
+              onToggleAssignment={toggleComplete}
+              openView={setViewAndClose}
             />
           )}
 
           {view === "Announcements" && (
             <section className="content-section announcement-grid">
-              {announcements.map((item) => <article className="announcement-card" key={item.id}><h2>{item.title}</h2><p>{item.content}</p><div className="announcement-meta"><span>Posted On: {formatDateTime(item.postedAt)}</span></div></article>)}
+              {[...announcements].sort((a, b) => (b.postedAt ?? "").localeCompare(a.postedAt ?? "")).map((item) => <article className="announcement-card" key={item.id}><h2>{item.title}</h2><p>{item.content}</p><div className="announcement-meta"><span>Posted On: {formatDateTime(item.postedAt)}</span></div></article>)}
               {!announcements.length && <EmptyState icon={FileText} title="No announcements yet" detail="School notices will show here when they are synchronized." />}
             </section>
           )}
@@ -659,7 +696,7 @@ function App() {
           {view === "Study Materials" && (
             <section className="content-section">
               <div className="material-list">
-                {messages.filter((item) => item.subject && item.category === "Study material" && item.sender?.toLocaleLowerCase() === item.teacher?.toLocaleLowerCase()).map((item) => <article className="material-card" key={item.id}><div className="material-icon"><BookOpen size={19} /></div><div><div className="material-head"><span className="subject-pill">{item.subject}</span><span className={`origin-tag ${item.origin}`}>{originLabel(item.origin)}</span></div><h3>{item.content}</h3><p>{item.teacher ?? "Teacher not identified"} · {formatDateTime(item.postedAt)}</p></div>{item.originalUrl && <a href={item.originalUrl} target="_blank" rel="noreferrer" className="icon-button" title="Open original"><ArrowUpRight size={17} /></a>}</article>)}
+                {messages.filter((item) => item.subject && item.category === "Study material" && item.sender?.toLocaleLowerCase() === item.teacher?.toLocaleLowerCase()).sort((a, b) => (b.postedAt ?? "").localeCompare(a.postedAt ?? "")).map((item) => <article className="material-card" key={item.id}><div className="material-icon"><BookOpen size={19} /></div><div><div className="material-head"><span className="subject-pill">{item.subject}</span><span className={`origin-tag ${item.origin}`}>{originLabel(item.origin)}</span></div><h3>{item.content}</h3><p>{item.teacher ?? "Teacher not identified"} · {formatDateTime(item.postedAt)}</p></div>{item.originalUrl && <a href={item.originalUrl} target="_blank" rel="noreferrer" className="icon-button" title="Open original"><ArrowUpRight size={17} /></a>}</article>)}
                 {!messages.some((item) => item.subject && item.category === "Study material" && item.sender?.toLocaleLowerCase() === item.teacher?.toLocaleLowerCase()) && <EmptyState icon={BookOpen} title="No study materials yet" detail="Material upload messages will be collected here." />}
               </div>
             </section>
@@ -717,7 +754,7 @@ function App() {
           <div className="form-actions"><button type="button" className="button subtle" onClick={() => setModal(null)}>Cancel</button><button type="submit" className="button primary">{editing ? "Save changes" : "Add homework"}</button></div>
         </form>
       </Modal>}
-      {modal === "event" && <Modal title="Add calendar event" close={() => setModal(null)}><form className="form-grid" onSubmit={submitEvent}><label className="full">Event title<input name="title" required placeholder="e.g. Reading time" /></label><label className="full">Date<input name="date" type="date" required /></label><div className="form-actions"><button className="button subtle" type="button" onClick={() => setModal(null)}>Cancel</button><button className="button primary" type="submit">Add event</button></div></form></Modal>}
+      {modal === "event" && <Modal title="Add calendar event" close={() => setModal(null)}><form className="form-grid" onSubmit={submitEvent}><label className="full">Event title<input name="title" required placeholder="e.g. Reading time" /></label><label className="full">Date<input name="date" type="date" required defaultValue={eventDraftDate} /></label><div className="form-actions"><button className="button subtle" type="button" onClick={() => setModal(null)}>Cancel</button><button className="button primary" type="submit">Add event</button></div></form></Modal>}
     </div>
   );
 }
@@ -741,6 +778,7 @@ function viewDescription(view: View) {
 function DashboardView({
   assignments,
   messages,
+  calendarEvents,
   progress,
   dueToday,
   overdue,
@@ -750,6 +788,7 @@ function DashboardView({
 }: {
   assignments: Assignment[];
   messages: TeacherMessage[];
+  calendarEvents: DerivedCalendarEvent[];
   progress: number;
   dueToday: Assignment[];
   overdue: Assignment[];
@@ -762,6 +801,7 @@ function DashboardView({
     .sort((a, b) => a.dueDate.localeCompare(b.dueDate))
     .slice(0, 3);
   const completed = assignments.filter((item) => item.status === "completed").length;
+
   return (
     <>
       <section className="welcome-panel">
@@ -777,10 +817,10 @@ function DashboardView({
       </section>
       <div className="dashboard-columns">
         <section className="panel upcoming-panel"><PanelHeader title="Coming up" subtitle="Your next deadlines" action="All homework" onAction={() => openView("Homework")} />{next.length ? <div className="compact-assignment-list">{next.map((item) => <div className="compact-assignment" key={item.id}><div className={`due-date-box ${priority(item)}`}><strong>{new Date(`${item.dueDate}T00:00:00`).getDate()}</strong><small>{new Date(`${item.dueDate}T00:00:00`).toLocaleDateString("en", { month: "short" })}</small></div><div className="compact-assignment-copy"><span>{item.subject}</span><strong>{item.title}</strong></div><span className={`priority-tag ${priority(item)}`}>{priority(item) === "today" ? "Today" : priority(item) === "tomorrow" ? "Tomorrow" : "Upcoming"}</span></div>)}</div> : <EmptyState icon={CalendarDays} title="No upcoming deadlines" detail="Add homework to plan your week." action="Add homework" onAction={onAdd} />}</section>
-        <section className="panel week-panel"><PanelHeader title="Your week" subtitle="A quick look at your workload" action="Open calendar" onAction={() => openView("Calendar")} /><div className="week-visual">{Array.from({ length: 7 }, (_, index) => { const date = new Date(); date.setDate(date.getDate() - date.getDay() + index); const isoDate = new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 10); const count = assignments.filter((item) => item.dueDate === isoDate && item.status !== "completed").length; return <div className={`week-day ${isoDate === todayISO() ? "current" : ""}`} key={isoDate}><span>{date.toLocaleDateString("en", { weekday: "short" })}</span><div className="week-bar-track"><div style={{ height: `${count ? Math.min(100, 25 + count * 30) : 5}%` }} className={count ? "has-task" : ""} /></div><strong>{date.getDate()}</strong><small>{count ? `${count} task${count > 1 ? "s" : ""}` : "Free"}</small></div>; })}</div><div className="week-legend"><span><i className="legend-dot due-dot" />Deadline</span><span><i className="legend-dot free-dot" />No tasks due</span></div></section>
+        <section className="panel week-panel"><PanelHeader title="Your week" subtitle="A quick look at your workload" /><div className="week-visual">{Array.from({ length: 7 }, (_, index) => { const date = new Date(); date.setDate(date.getDate() - date.getDay() + index); const isoDate = new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 10); const count = calendarEvents.filter((item) => item.date === isoDate && !item.completed).length; return <div className={`week-day ${isoDate === todayISO() ? "current" : ""}`} key={isoDate}><span>{date.toLocaleDateString("en", { weekday: "short" })}</span><div className="week-bar-track"><div style={{ height: `${count ? Math.min(100, 25 + count * 30) : 5}%` }} className={count ? "has-task" : ""} /></div><strong>{date.getDate()}</strong><small>{count ? `${count} item${count > 1 ? "s" : ""}` : "Free"}</small></div>; })}</div><div className="week-legend"><span><i className="legend-dot due-dot" />Scheduled</span><span><i className="legend-dot free-dot" />Free day</span></div></section>
       </div>
       <section className="panel dashboard-message-panel"><PanelHeader title="Recent messages" subtitle="The latest from your teachers" action="Open inbox" onAction={() => openView("Messages")} />{messages.length ? <div className="message-list compact-messages">{[...messages].sort((a, b) => (b.postedAt ?? "").localeCompare(a.postedAt ?? "")).slice(0, 2).map(renderMessage)}</div> : <EmptyState icon={MessageSquareText} title="No messages yet" detail="Teacher messages will appear here after sync." />}</section>
-      <div className="quick-links"><strong>Quick access</strong>{(["Homework", "Calendar", "Messages", "Study Materials"] as View[]).map((item) => <button key={item} onClick={() => openView(item)}>{item}<ArrowUpRight size={15} /></button>)}</div>
+      <div className="quick-links"><strong>Quick access</strong>{(["Homework", "Messages", "Announcements", "Study Materials"] as View[]).map((item) => <button key={item} onClick={() => openView(item)}>{item}<ArrowUpRight size={15} /></button>)}</div>
     </>
   );
 }
@@ -793,8 +833,8 @@ function MiniMetric({ label, value, tone }: { label: string; value: number; tone
   return <div className="mini-metric"><span className={`metric-dot ${tone}`} /><div><strong>{value}</strong><small>{label}</small></div></div>;
 }
 
-function PanelHeader({ title, subtitle, action, onAction }: { title: string; subtitle: string; action: string; onAction: () => void }) {
-  return <div className="panel-header"><div><h2>{title}</h2><p>{subtitle}</p></div><button className="text-button" onClick={onAction}>{action}<ArrowUpRight size={14} /></button></div>;
+function PanelHeader({ title, subtitle, action, onAction }: { title: string; subtitle: string; action?: string; onAction?: () => void }) {
+  return <div className="panel-header"><div><h2>{title}</h2><p>{subtitle}</p></div>{action && onAction && <button className="text-button" onClick={onAction}>{action}<ArrowUpRight size={14} /></button>}</div>;
 }
 
 function EmptyState({ icon: Icon, title, detail, action, onAction }: { icon: LucideIcon; title: string; detail: string; action?: string; onAction?: () => void }) {
@@ -804,26 +844,37 @@ function EmptyState({ icon: Icon, title, detail, action, onAction }: { icon: Luc
 function CalendarView({
   date,
   mode,
+  selectedDay,
+  typeFilter,
+  eventItems,
   assignments,
-  announcements,
-  messages,
-  events,
   setDate,
   setMode,
+  setSelectedDay,
+  setTypeFilter,
+  onAddEvent,
+  onToggleAssignment,
+  openView,
 }: {
   date: Date;
   mode: "Month" | "Week" | "Day";
+  selectedDay: string;
+  typeFilter: "All" | CalendarEventType;
+  eventItems: DerivedCalendarEvent[];
   assignments: Assignment[];
-  announcements: Announcement[];
-  messages: TeacherMessage[];
-  events: CalendarEvent[];
   setDate: (date: Date) => void;
   setMode: (mode: "Month" | "Week" | "Day") => void;
+  setSelectedDay: (iso: string) => void;
+  setTypeFilter: (filter: "All" | CalendarEventType) => void;
+  onAddEvent: (dateIso?: string) => void;
+  onToggleAssignment: (assignment: Assignment) => void;
+  openView: (view: View) => void;
 }) {
   const year = date.getFullYear();
   const month = date.getMonth();
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   const monthStart = new Date(year, month, 1).getDay();
+  const totalMonthCells = Math.ceil((monthStart + daysInMonth) / 7) * 7;
   const toISO = (value: Date) =>
     new Date(value.getTime() - value.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
   const move = (offset: number) => {
@@ -831,53 +882,64 @@ function CalendarView({
     if (mode === "Month") next.setMonth(next.getMonth() + offset);
     else next.setDate(next.getDate() + offset * (mode === "Week" ? 7 : 1));
     setDate(next);
+    if (mode === "Day") setSelectedDay(toISO(next));
   };
-  const messageEvents = messages.flatMap((message) => {
-    if (!message.subject ||
-      message.sender?.toLocaleLowerCase() !== message.teacher?.toLocaleLowerCase() ||
-      (message.category !== "Exam" && message.category !== "Project")) return [];
-    const dateMatch = message.content.match(/\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b/);
-    if (!dateMatch) return [];
-    return [{
-      title: `${message.category}: ${message.subject ?? message.content.slice(0, 50)}`,
-      date: `${dateMatch[3]}-${dateMatch[2].padStart(2, "0")}-${dateMatch[1].padStart(2, "0")}`,
-      type: message.category,
-    }];
-  });
-  const eventItems = [
-    ...assignments.filter((item) => item.status !== "completed").map((item) => ({
-      title: item.title,
-      date: item.dueDate,
-      type: /project|activity|exhibition|ebsb/i.test(item.title) ? "Project" : "Homework",
-    })),
-    ...messageEvents,
-    ...announcements.map((item) => ({
-      title: item.title,
-      date: item.postedAt?.slice(0, 10) ?? "",
-      type: "Announcement",
-    })),
-    ...events.map((item) => ({ title: item.title, date: item.date, type: item.category })),
-  ].filter((item) => item.date);
-  const calendarDays: Array<Date | null> = mode === "Month"
-    ? Array.from({ length: monthStart + daysInMonth }, (_, index) =>
-        index < monthStart ? null : new Date(year, month, index - monthStart + 1))
+
+  const filteredEvents = typeFilter === "All"
+    ? eventItems
+    : eventItems.filter((item) => item.type === typeFilter);
+
+  const calendarDays: Array<{ date: Date; outside: boolean }> = mode === "Month"
+    ? Array.from({ length: totalMonthCells }, (_, index) => {
+        const current = new Date(year, month, index - monthStart + 1);
+        return { date: current, outside: current.getMonth() !== month };
+      })
     : (() => {
         const first = new Date(date);
         if (mode === "Week") first.setDate(date.getDate() - date.getDay());
         return Array.from({ length: mode === "Week" ? 7 : 1 }, (_, index) => {
           const current = new Date(first);
           current.setDate(first.getDate() + index);
-          return current;
+          return { date: current, outside: false };
         });
       })();
+
   const weekdays = mode === "Day"
-    ? [date.toLocaleDateString("en", { weekday: "short" })]
+    ? [date.toLocaleDateString("en", { weekday: "long" })]
     : ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   const heading = mode === "Month"
     ? date.toLocaleDateString("en", { month: "long", year: "numeric" })
     : mode === "Week"
-      ? `Week of ${new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(calendarDays[0] ?? date)}`
-      : date.toLocaleDateString("en", { month: "long", day: "numeric", year: "numeric" });
+      ? `Week of ${new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(calendarDays[0]?.date ?? date)}`
+      : date.toLocaleDateString("en", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+
+  const selectedDayEvents = filteredEvents.filter((item) => item.date === selectedDay);
+  const filterTabs: Array<"All" | CalendarEventType> = ["All", "Homework", "Exam", "Project", "Announcement", "Personal"];
+  const now = new Date();
+  const monthWindow = Array.from({ length: 5 }, (_, index) => {
+    const offset = index - 2;
+    const monthDate = new Date(now.getFullYear(), now.getMonth() + offset, 1);
+    const monthKey = `${monthDate.getFullYear()}-${String(monthDate.getMonth() + 1).padStart(2, "0")}`;
+    const count = filteredEvents.filter((item) => item.date.startsWith(monthKey)).length;
+    return {
+      offset,
+      date: monthDate,
+      monthKey,
+      count,
+      label: monthDate.toLocaleDateString("en", { month: "short", year: "numeric" }),
+      isActive: date.getFullYear() === monthDate.getFullYear() && date.getMonth() === monthDate.getMonth(),
+    };
+  });
+
+  const selectMonthFromWindow = (monthDate: Date, monthKey: string) => {
+    setDate(monthDate);
+    if (monthKey === todayISO().slice(0, 7)) {
+      setSelectedDay(todayISO());
+      return;
+    }
+    const firstMatch = filteredEvents.find((item) => item.date.startsWith(monthKey));
+    setSelectedDay(firstMatch?.date ?? `${monthKey}-01`);
+  };
 
   return (
     <section className="calendar-layout">
@@ -889,12 +951,39 @@ function CalendarView({
               <button className="icon-button" onClick={() => move(1)} aria-label="Next"><ChevronRight size={17} /></button>
             </div>
             <h2>{heading}</h2>
-            <button className="text-button" onClick={() => setDate(new Date())}>Today</button>
+            <button className="text-button" onClick={() => { const current = new Date(); setDate(current); setSelectedDay(todayISO()); }}>Today</button>
           </div>
+          <div className="calendar-toolbar-controls">
+            <div className="segmented compact">
+              {(["Month", "Week", "Day"] as const).map((item) =>
+                <button key={item} className={mode === item ? "selected" : ""} onClick={() => setMode(item)}>{item}</button>,
+              )}
+            </div>
+          </div>
+        </div>
+        <div className="calendar-month-strip" aria-label="Quick month switcher">
+          {monthWindow.map((item) => (
+            <button
+              key={item.monthKey}
+              type="button"
+              className={`month-pill ${item.isActive ? "selected" : ""}`}
+              onClick={() => selectMonthFromWindow(item.date, item.monthKey)}
+            >
+              <span>{item.label}</span>
+              <small>{item.count}</small>
+            </button>
+          ))}
+        </div>
+        <div className="calendar-filter-bar">
           <div className="segmented compact">
-            {(["Month", "Week", "Day"] as const).map((item) =>
-              <button key={item} className={mode === item ? "selected" : ""} onClick={() => setMode(item)}>{item}</button>,
-            )}
+            {filterTabs.map((tab) => {
+              const count = tab === "All" ? eventItems.length : eventItems.filter((item) => item.type === tab).length;
+              return (
+                <button key={tab} className={typeFilter === tab ? "selected" : ""} onClick={() => setTypeFilter(tab)}>
+                  {tab} ({count})
+                </button>
+              );
+            })}
           </div>
         </div>
         <div className="calendar-grid">
@@ -902,18 +991,40 @@ function CalendarView({
             {weekdays.map((day) => <span key={day}>{day}</span>)}
           </div>
           <div className={`date-grid ${mode.toLowerCase()}`}>
-            {calendarDays.map((day, index) => {
-              if (!day) return <div key={`blank-${index}`} className="calendar-cell outside" />;
+            {calendarDays.map(({ date: day, outside }) => {
               const iso = toISO(day);
-              const matches = eventItems.filter((item) => item.date === iso);
+              const matches = filteredEvents.filter((item) => item.date === iso);
+              const isSelected = iso === selectedDay;
+              const isToday = iso === todayISO();
+              const maxVisible = mode === "Month" ? 3 : matches.length;
               return (
-                <div key={iso} className={`calendar-cell ${iso === todayISO() ? "is-today" : ""}`}>
-                  <span className="day-number">{day.getDate()}</span>
+                <div
+                  key={iso}
+                  role="button"
+                  tabIndex={0}
+                  className={`calendar-cell ${outside ? "outside" : ""} ${isToday ? "is-today" : ""} ${isSelected ? "is-selected" : ""}`}
+                  onClick={() => setSelectedDay(iso)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      setSelectedDay(iso);
+                    }
+                  }}
+                >
+                  <div className="calendar-cell-top">
+                    <span className="day-number">{day.getDate()}</span>
+                    {matches.length > 0 && <span className="cell-count">{matches.length}</span>}
+                  </div>
                   <div className="cell-events">
-                    {matches.slice(0, 3).map((item, eventIndex) =>
-                      <span key={`${item.title}-${eventIndex}`} className={`calendar-event ${item.type.toLowerCase().replaceAll(" ", "-")}`} title={item.title}>{item.title}</span>,
-                    )}
-                    {matches.length > 3 && <small>+{matches.length - 3} more</small>}
+                    {matches.slice(0, maxVisible).map((item) => (
+                      <div key={item.id} className={`calendar-event ${item.type.toLowerCase().replaceAll(" ", "-")} ${item.completed ? "is-complete" : ""}`} title={item.title}>
+                        <span className="calendar-event-title">{item.title}</span>
+                        {mode !== "Month" && item.details && item.details !== item.title && (
+                          <small className="calendar-event-detail">{item.details}</small>
+                        )}
+                      </div>
+                    ))}
+                    {matches.length > maxVisible && <small>+{matches.length - maxVisible} more</small>}
                   </div>
                 </div>
               );
@@ -922,15 +1033,64 @@ function CalendarView({
         </div>
       </div>
       <aside className="calendar-aside panel">
-        <h3>Event types</h3>
+        <div className="agenda-header">
+          <div>
+            <span className="eyebrow">SELECTED DAY</span>
+            <h3>{new Date(`${selectedDay}T00:00:00`).toLocaleDateString("en", { weekday: "long", day: "numeric", month: "short", year: "numeric" })}</h3>
+          </div>
+          <button className="button subtle" onClick={() => onAddEvent(selectedDay)}><Plus size={14} /> Add</button>
+        </div>
+        {selectedDayEvents.length ? (
+          <div className="agenda-list">
+            {selectedDayEvents.map((item) => {
+              const linkedAssignment = item.assignmentId
+                ? assignments.find((assignment) => assignment.id === item.assignmentId)
+                : undefined;
+              return (
+                <article className="agenda-card" key={item.id}>
+                  <div className="agenda-card-top">
+                    <span className={`calendar-event ${item.type.toLowerCase().replaceAll(" ", "-")}`}>{item.type}</span>
+                    {item.updatedFromPrevious && <span className="updated-badge">Updated date</span>}
+                  </div>
+                  <strong className={item.completed ? "struck" : ""}>{item.title}</strong>
+                  {item.details && item.details !== item.title && <p>{item.details}</p>}
+                  <div className="agenda-card-footer">
+                    <span className="agenda-source">{item.sourceLabel}</span>
+                    {linkedAssignment && (
+                      <button className="text-button" onClick={() => onToggleAssignment(linkedAssignment)}>
+                        {linkedAssignment.status === "completed" ? "Mark pending" : "Mark done"}
+                      </button>
+                    )}
+                    {item.source === "message" && (
+                      <button className="text-button" onClick={() => openView("Messages")}>View message</button>
+                    )}
+                    {item.source === "announcement" && (
+                      <button className="text-button" onClick={() => openView("Announcements")}>View notice</button>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="agenda-empty">
+            <p>Nothing scheduled on this date{typeFilter !== "All" ? ` under ${typeFilter}` : ""}.</p>
+            <button className="button subtle" onClick={() => onAddEvent(selectedDay)}><Plus size={14} /> Add event</button>
+          </div>
+        )}
+        <div className="calendar-aside-divider" />
+        <h4>Event types</h4>
         <div className="calendar-legend">
           <span><i className="legend-dot due-dot" />Homework</span>
-          <span><i className="legend-dot project-dot" />Projects</span>
           <span><i className="legend-dot exam-dot" />Exams</span>
+          <span><i className="legend-dot project-dot" />Projects</span>
           <span><i className="legend-dot notice-dot" />Announcements</span>
           <span><i className="legend-dot personal-dot" />Personal</span>
         </div>
-        <div className="calendar-aside-note"><CalendarDays size={17} /><p>Assignment deadlines are added to the calendar automatically. Add personal events with the button above.</p></div>
+        <div className="calendar-aside-note">
+          <CalendarDays size={17} />
+          <p>Homeworks, exams, and notices are read from Homework, teacher messages, and Notice Board. Newer notices or messages automatically update matching dates.</p>
+        </div>
       </aside>
     </section>
   );
